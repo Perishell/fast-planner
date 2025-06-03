@@ -378,7 +378,6 @@ int main(int argc, char **argv)
   _GLX_SIZE = (int)(_x_size * _inv_resolution);
   _GLY_SIZE = (int)(_y_size * _inv_resolution);
   _GLZ_SIZE = (int)(_z_size * _inv_resolution);
-
   ros::Rate rate(100);
   bool status = ros::ok();
   while(status) 

@@ -38,53 +38,63 @@ FastPlannerManager::~FastPlannerManager() { std::cout << "des manager" << std::e
 void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   /* read algorithm parameters */
 
-  nh.param("manager/max_vel", pp_.max_vel_, -1.0);
-  nh.param("manager/max_acc", pp_.max_acc_, -1.0);
-  nh.param("manager/max_jerk", pp_.max_jerk_, -1.0);
-  nh.param("manager/dynamic_environment", pp_.dynamic_, -1);
-  nh.param("manager/clearance_threshold", pp_.clearance_, -1.0);
-  nh.param("manager/local_segment_length", pp_.local_traj_len_, -1.0);
-  nh.param("manager/control_points_distance", pp_.ctrl_pt_dist, -1.0);
+  nh.param("manager/max_vel", pp_.max_vel_, -1.0);                          // 最大速度（m/s）
+  nh.param("manager/max_acc", pp_.max_acc_, -1.0);                          // 最大加速度（m/s²）
+  nh.param("manager/max_jerk", pp_.max_jerk_, -1.0);                        // 最大加加速度（m/s³）
+  nh.param("manager/dynamic_environment", pp_.dynamic_, -1);                // 是否动态环境（0/1）
+  nh.param("manager/clearance_threshold", pp_.clearance_, -1.0);            // 安全距离阈值（m）
+  nh.param("manager/local_segment_length", pp_.local_traj_len_, -1.0);      // 局部轨迹长度（m）
+  nh.param("manager/control_points_distance", pp_.ctrl_pt_dist, -1.0);      // B样条控制点间距（m）
 
+  /*---------------------- 加载算法开关参数 ----------------------*/
   bool use_geometric_path, use_kinodynamic_path, use_topo_path, use_optimization, use_active_perception;
-  nh.param("manager/use_geometric_path", use_geometric_path, false);
-  nh.param("manager/use_kinodynamic_path", use_kinodynamic_path, false);
-  nh.param("manager/use_topo_path", use_topo_path, false);
-  nh.param("manager/use_optimization", use_optimization, false);
+  nh.param("manager/use_geometric_path", use_geometric_path, false);        // 是否启用几何路径搜索（A*）
+  nh.param("manager/use_kinodynamic_path", use_kinodynamic_path, false);    // 是否启用动力学路径搜索
+  nh.param("manager/use_topo_path", use_topo_path, false);                  // 是否启用拓扑路径规划
+  nh.param("manager/use_optimization", use_optimization, false);            // 是否启用B样条优化
 
+  /*---------------------- 初始化基础数据 ----------------------*/
+  // 轨迹ID初始化
+
+  /*---------------------- 创建环境模型 ----------------------*/
   local_data_.traj_id_ = 0;
-  sdf_map_.reset(new SDFMap);
-  sdf_map_->initMap(nh);
-  edt_environment_.reset(new EDTEnvironment);
-  edt_environment_->setMap(sdf_map_);
+  sdf_map_.reset(new SDFMap);                                       // 创建符号距离场地图
+  sdf_map_->initMap(nh);                                            // 初始化地图（加载分辨率、边界等参数）
+  edt_environment_.reset(new EDTEnvironment);                       // 创建欧氏距离变换环境
+  edt_environment_->setMap(sdf_map_);                               // 将SDF地图绑定到环境
 
+  /*---------------------- 初始化路径规划器 ----------------------*/
+  // 几何路径规划器（A*算法）
   if (use_geometric_path) {
-    geo_path_finder_.reset(new Astar);
-    geo_path_finder_->setParam(nh);
-    geo_path_finder_->setEnvironment(edt_environment_);
-    geo_path_finder_->init();
+    geo_path_finder_.reset(new Astar);                              // 创建A*路径规划器
+    geo_path_finder_->setParam(nh);                                 // 加载A*参数（启发式权重等）
+    geo_path_finder_->setEnvironment(edt_environment_);             // 绑定环境
+    geo_path_finder_->init();                                               
   }
-
+  // 动力学路径规划器（考虑运动约束）
   if (use_kinodynamic_path) {
-    kino_path_finder_.reset(new KinodynamicAstar);
-    kino_path_finder_->setParam(nh);
+    kino_path_finder_.reset(new KinodynamicAstar);                  // 创建动力学A*规划器
+    kino_path_finder_->setParam(nh);                                // 加载动力学参数（时间分辨率等）
     kino_path_finder_->setEnvironment(edt_environment_);
     kino_path_finder_->init();
   }
-
+  /*---------------------- 初始化优化器 ----------------------*/
   if (use_optimization) {
+    // 预创建10个优化器实例（支持多线程）
     bspline_optimizers_.resize(10);
     for (int i = 0; i < 10; ++i) {
+      // 创建B样条优化器
       bspline_optimizers_[i].reset(new BsplineOptimizer);
+      // 加载优化权重（平滑项、障碍物项等）
       bspline_optimizers_[i]->setParam(nh);
       bspline_optimizers_[i]->setEnvironment(edt_environment_);
     }
   }
-
+  /*---------------------- 初始化拓扑路径规划 ----------------------*/
   if (use_topo_path) {
-    topo_prm_.reset(new TopologyPRM);
+    topo_prm_.reset(new TopologyPRM);                               // 创建拓扑PRM规划器
     topo_prm_->setEnvironment(edt_environment_);
-    topo_prm_->init(nh);
+    topo_prm_->init(nh);                                            // 初始化拓扑图构造
   }
 }
 
@@ -249,73 +259,91 @@ bool FastPlannerManager::kinodynamicReplan(Eigen::Vector3d start_pt, Eigen::Vect
 
 // SECTION topological replanning
 
+// 全局轨迹规划主函数，输入参数为起始位置
 bool FastPlannerManager::planGlobalTraj(const Eigen::Vector3d& start_pos) {
+  // 清空之前的拓扑路径数据
   plan_data_.clearTopoPaths();
 
-  // generate global reference trajectory
-
+  /* ------------------------- 全局参考轨迹生成 ------------------------- */
+  // 获取预定义的全局航点
   vector<Eigen::Vector3d> points = plan_data_.global_waypoints_;
-  if (points.size() == 0) std::cout << "no global waypoints!" << std::endl;
+  if (points.size() == 0) 
+    std::cout << "no global waypoints!" << std::endl; // 空航点警告
 
+  // 将起始点插入航点列表首部（确保轨迹从当前位置开始）
   points.insert(points.begin(), start_pos);
 
-  // insert intermediate points if too far
+  /* ----------- 插入中间点（当航点间距过大时分段插入） ----------- */
   vector<Eigen::Vector3d> inter_points;
-  const double            dist_thresh = 4.0;
+  const double dist_thresh = 4.0; // 最大分段距离阈值
 
   for (int i = 0; i < points.size() - 1; ++i) {
-    inter_points.push_back(points.at(i));
+    inter_points.push_back(points.at(i)); // 添加当前航点
     double dist = (points.at(i + 1) - points.at(i)).norm();
 
+    // 当两点间距超过阈值时插入中间点
     if (dist > dist_thresh) {
-      int id_num = floor(dist / dist_thresh) + 1;
-
+      int id_num = floor(dist / dist_thresh) + 1; // 计算需要插入的中间点数
+      // 线性插值生成中间点（例如间距6米时插入1个中间点，形成3段）
       for (int j = 1; j < id_num; ++j) {
-        Eigen::Vector3d inter_pt =
-            points.at(i) * (1.0 - double(j) / id_num) + points.at(i + 1) * double(j) / id_num;
+        Eigen::Vector3d inter_pt = points.at(i) * (1.0 - double(j)/id_num) 
+                                 + points.at(i + 1) * double(j)/id_num;
         inter_points.push_back(inter_pt);
       }
     }
   }
+  inter_points.push_back(points.back()); // 添加最后一个航点
 
-  inter_points.push_back(points.back());
+  // 若处理后仅有起点和终点，在中间强制添加中点（确保轨迹有控制点）
   if (inter_points.size() == 2) {
     Eigen::Vector3d mid = (inter_points[0] + inter_points[1]) * 0.5;
     inter_points.insert(inter_points.begin() + 1, mid);
   }
 
-  // write position matrix
-  int             pt_num = inter_points.size();
+  /* ------------------------- 轨迹生成 ------------------------- */
+  // 构造位置矩阵，每行代表一个航点的3D坐标
+  int pt_num = inter_points.size();
   Eigen::MatrixXd pos(pt_num, 3);
-  for (int i = 0; i < pt_num; ++i) pos.row(i) = inter_points[i];
+  for (int i = 0; i < pt_num; ++i) 
+    pos.row(i) = inter_points[i];
 
+  // 初始化速度/加速度边界条件为零（起点终点零速度、零加速度）
   Eigen::Vector3d zero(0, 0, 0);
+  
+  // 计算相邻航点间的预估时间（基于最大速度和距离）
   Eigen::VectorXd time(pt_num - 1);
   for (int i = 0; i < pt_num - 1; ++i) {
-    time(i) = (pos.row(i + 1) - pos.row(i)).norm() / (pp_.max_vel_);
+    time(i) = (pos.row(i+1) - pos.row(i)).norm() / pp_.max_vel_;
   }
 
+  // 调整首尾段时间权重（确保时间不小于1秒）为了使得速度变化的更加平稳
   time(0) *= 2.0;
   time(0) = max(1.0, time(0));
-  time(time.rows() - 1) *= 2.0;
-  time(time.rows() - 1) = max(1.0, time(time.rows() - 1));
+  time(time.rows()-1) *= 2.0;
+  time(time.rows()-1) = max(1.0, time(time.rows()-1));
 
+  // 生成最小加加速度（Snap）多项式轨迹
+  // pos 每个点的位置 time 每个点位置对应的时间
   PolynomialTraj gl_traj = minSnapTraj(pos, zero, zero, zero, zero, time);
 
+  // 设置全局轨迹数据并记录生成时间
   auto time_now = ros::Time::now();
   global_data_.setGlobalTraj(gl_traj, time_now);
 
-  // truncate a local trajectory
-
-  double            dt, duration;
-  Eigen::MatrixXd   ctrl_pts = reparamLocalTraj(0.0, dt, duration);
+  /* ------------------------- 局部轨迹截取 ------------------------- */
+  double dt, duration;
+  // 重新参数化局部轨迹（时间间隔dt和总时长duration会被计算）
+  Eigen::MatrixXd ctrl_pts = reparamLocalTraj(0.0, dt, duration);
+  // 基于控制点生成3阶非均匀B样条轨迹
   NonUniformBspline bspline(ctrl_pts, 3, dt);
 
+  // 更新局部轨迹数据
   global_data_.setLocalTraj(bspline, 0.0, duration, 0.0);
   local_data_.position_traj_ = bspline;
-  local_data_.start_time_    = time_now;
+  local_data_.start_time_ = time_now;
   ROS_INFO("global trajectory generated.");
 
+  // 更新轨迹信息（如速度、加速度约束等）
   updateTrajInfo();
 
   return true;

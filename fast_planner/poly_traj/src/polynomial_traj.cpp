@@ -26,16 +26,20 @@
 #include <iostream>
 #include <poly_traj/polynomial_traj.h>
 
+// 最小Snap轨迹生成函数（核心实现）
 PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& start_vel,
                            const Eigen::Vector3d& end_vel, const Eigen::Vector3d& start_acc,
                            const Eigen::Vector3d& end_acc, const Eigen::VectorXd& Time) {
-  int seg_num = Time.size();
-  Eigen::MatrixXd poly_coeff(seg_num, 3 * 6);
-  Eigen::VectorXd Px(6 * seg_num), Py(6 * seg_num), Pz(6 * seg_num);
+
+  // --- 初始化阶段 --- 
+  int seg_num = Time.size(); // 轨迹段数（航点间分段）
+  Eigen::MatrixXd poly_coeff(seg_num, 3 * 6); // 存储XYZ三轴各6阶多项式系数
+  Eigen::VectorXd Px(6 * seg_num), Py(6 * seg_num), Pz(6 * seg_num); // 各段多项式系数向量
 
   int num_f, num_p;  // number of fixed and free variables
   int num_d;         // number of all segments' derivatives
 
+  // 阶乘计算lambda（用于导数项系数计算）
   const static auto Factorial = [](int x) {
     int fac = 1;
     for (int i = x; i > 0; i--)
@@ -44,12 +48,14 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
   };
 
   /* ---------- end point derivative ---------- */
-  Eigen::VectorXd Dx = Eigen::VectorXd::Zero(seg_num * 6);
+  // --- 端点导数约束设置 ---
+  Eigen::VectorXd Dx = Eigen::VectorXd::Zero(seg_num * 6); // X轴各段导数约束
   Eigen::VectorXd Dy = Eigen::VectorXd::Zero(seg_num * 6);
   Eigen::VectorXd Dz = Eigen::VectorXd::Zero(seg_num * 6);
 
   for (int k = 0; k < seg_num; k++) {
     /* position to derivative */
+    // 设置位置约束（每段起点和终点）
     Dx(k * 6) = Pos(k, 0);
     Dx(k * 6 + 1) = Pos(k + 1, 0);
     Dy(k * 6) = Pos(k, 1);
@@ -57,6 +63,7 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
     Dz(k * 6) = Pos(k, 2);
     Dz(k * 6 + 1) = Pos(k + 1, 2);
 
+    // 首段设置初始速度/加速度约束
     if (k == 0) {
       Dx(k * 6 + 2) = start_vel(0);
       Dy(k * 6 + 2) = start_vel(1);
@@ -65,7 +72,9 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
       Dx(k * 6 + 4) = start_acc(0);
       Dy(k * 6 + 4) = start_acc(1);
       Dz(k * 6 + 4) = start_acc(2);
-    } else if (k == seg_num - 1) {
+    } 
+    // 末段设置终止速度/加速度约束
+    else if (k == seg_num - 1) {
       Dx(k * 6 + 3) = end_vel(0);
       Dy(k * 6 + 3) = end_vel(1);
       Dz(k * 6 + 3) = end_vel(2);
@@ -77,6 +86,7 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
   }
 
   /* ---------- Mapping Matrix A ---------- */
+  // --- 构建映射矩阵A ---
   Eigen::MatrixXd Ab;
   Eigen::MatrixXd A = Eigen::MatrixXd::Zero(seg_num * 6, seg_num * 6);
 
@@ -91,6 +101,7 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
   }
 
   /* ---------- Produce Selection Matrix C' ---------- */
+  // --- 构建选择矩阵Ct ---
   Eigen::MatrixXd Ct, C;
 
   num_f = 2 * seg_num + 4;  // 3 + 3 + (seg_num - 1) * 2 = 2m + 4
@@ -127,8 +138,9 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
   Eigen::VectorXd Dz1 = C * Dz;
 
   /* ---------- minimum snap matrix ---------- */
+  // --- 构造最小Snap优化问题 ---
   Eigen::MatrixXd Q = Eigen::MatrixXd::Zero(seg_num * 6, seg_num * 6);
-
+  // 计算Snap项积分（四阶导数平方的积分）
   for (int k = 0; k < seg_num; k++) {
     for (int i = 3; i < 6; i++) {
       for (int j = 3; j < 6; j++) {
@@ -139,6 +151,7 @@ PolynomialTraj minSnapTraj(const Eigen::MatrixXd& Pos, const Eigen::Vector3d& st
   }
 
   /* ---------- R matrix ---------- */
+  // --- 求解闭式解 ---
   Eigen::MatrixXd R = C * A.transpose().inverse() * Q * A.inverse() * Ct;
 
   Eigen::VectorXd Dxf(2 * seg_num + 4), Dyf(2 * seg_num + 4), Dzf(2 * seg_num + 4);

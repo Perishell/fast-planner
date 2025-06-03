@@ -63,6 +63,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
   open_set_.push(cur_node);
   use_node_num_ += 1;
 
+  // 动态环境中存在随时间变化的障碍物或约束（例如移动车辆、行人），节点需要记录时间信息以判断其有效性。
   if (dynamic)
   {
     time_origin_ = time_start;
@@ -84,6 +85,7 @@ int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, 
     cur_node = open_set_.top();
 
     // Terminate?
+    // 判断当前节点是否已经离起点足够远
     bool reach_horizon = (cur_node->state.head(3) - start_pt).norm() >= horizon_;
     bool near_end = abs(cur_node->index(0) - end_index(0)) <= tolerance &&
                     abs(cur_node->index(1) - end_index(1)) <= tolerance &&

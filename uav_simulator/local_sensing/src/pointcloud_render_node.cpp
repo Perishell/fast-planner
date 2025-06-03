@@ -96,40 +96,58 @@ void rcvGlobalPointCloudCallBack(
 }
 
 void renderSensedPoints(const ros::TimerEvent& event) {
+  // 检查全局地图和里程计数据是否就绪
   if (!has_global_map || !has_odom) return;
 
+  // 从里程计获取当前姿态四元数
   Eigen::Quaterniond q;
-  q.x() = _odom.pose.pose.orientation.x;
-  q.y() = _odom.pose.pose.orientation.y;
-  q.z() = _odom.pose.pose.orientation.z;
-  q.w() = _odom.pose.pose.orientation.w;
+  q.x() = _odom.pose.pose.orientation.x; // X分量
+  q.y() = _odom.pose.pose.orientation.y; // Y分量
+  q.z() = _odom.pose.pose.orientation.z; // Z分量
+  q.w() = _odom.pose.pose.orientation.w; // 实部
 
+  // 将四元数转换为旋转矩阵
   Eigen::Matrix3d rot;
   rot = q;
+  // 获取Yaw轴（通常为机器人的前进方向）
   Eigen::Vector3d yaw_vec = rot.col(0);
 
+  // 清空局部地图点云缓存
   _local_map.points.clear();
+
+  // 创建以当前位置为中心的搜索点
   pcl::PointXYZ searchPoint(_odom.pose.pose.position.x,
                             _odom.pose.pose.position.y,
                             _odom.pose.pose.position.z);
+  // 清空KD树搜索结果缓存    
   _pointIdxRadiusSearch.clear();
   _pointRadiusSquaredDistance.clear();
 
+  // 执行半径搜索（核心感知逻辑）
   pcl::PointXYZ pt;
-  if (_kdtreeLocalMap.radiusSearch(searchPoint, sensing_horizon,
-                                   _pointIdxRadiusSearch,
-                                   _pointRadiusSquaredDistance) > 0) {
+  if (_kdtreeLocalMap.radiusSearch(
+    // 使用KD树加速搜索
+    searchPoint,                      // 搜索中心点
+    sensing_horizon,                  // 感知半径（单位：米）
+    _pointIdxRadiusSearch,            // 输出：找到的点索引
+    _pointRadiusSquaredDistance) > 0) // 输出：平方距离
+    {
+    // 遍历所有找到的点
     for (size_t i = 0; i < _pointIdxRadiusSearch.size(); ++i) {
+      // 从全局地图获取点数据
       pt = _cloud_all_map.points[_pointIdxRadiusSearch[i]];
-
+      /* ------ 高度过滤：排除垂直方向视野外的点 ------ */
+      // 计算高度差与水平距离的比值（正切值）
+      // 若超过15度（tan(π/12)≈0.2679）则跳过
       if ((fabs(pt.z - _odom.pose.pose.position.z) / (sensing_horizon)) >
           tan(M_PI / 12.0))
         continue;
-
+      /* ------ 前方过滤：排除机器人后方的点 ------ */
+      // 计算点相对于机器人的位置向量
       Vector3d pt_vec(pt.x - _odom.pose.pose.position.x,
                       pt.y - _odom.pose.pose.position.y,
                       pt.z - _odom.pose.pose.position.z);
-
+      // 通过过滤的点加入局部地图
       if (pt_vec.dot(yaw_vec) < 0) continue;
 
       _local_map.points.push_back(pt);
@@ -166,16 +184,20 @@ int main(int argc, char** argv) {
   nh.getParam("map/z_size", _z_size);
 
   // subscribe point cloud
+  // 订阅的是从random_forest_sensing.cpp中来的/map_generator/global_cloud话题。
   global_map_sub = nh.subscribe("global_map", 1, rcvGlobalPointCloudCallBack);
+  // 这个订阅部分啥也没有，回调函数里面为空
   local_map_sub = nh.subscribe("local_map", 1, rcvLocalPointCloudCallBack);
+  // 订阅odom
   odom_sub = nh.subscribe("odometry", 50, rcvOdometryCallbck);
-
   // publisher depth image and color image
   pub_cloud =
       nh.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/cloud", 10);
 
+  // 将原始时间间隔乘以一个系数，生成新的触发间隔 控制频率
   double sensing_duration = 1.0 / sensing_rate * 2.5;
 
+  // 创建一个ROS定时器，周期性执行指定回调函数
   local_sensing_timer =
       nh.createTimer(ros::Duration(sensing_duration), renderSensedPoints);
 

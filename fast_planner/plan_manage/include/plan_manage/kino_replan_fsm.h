@@ -77,6 +77,8 @@ private:
   enum TARGET_TYPE { MANUAL_TARGET = 1, PRESET_TARGET = 2, REFENCE_PATH = 3 };
 
   /* planning utils */
+  // planner_manager_ 是一个指向 FastPlannerManager 类对象的智能指针变量。
+  // 通过这个智能指针，可以方便地操作 FastPlannerManager 类对象，而不需要手动进行内存管理。
   FastPlannerManager::Ptr planner_manager_;
   PlanningVisualization::Ptr visualization_;
 

@@ -61,32 +61,35 @@ pcl::PointCloud<pcl::PointXYZ> clicked_cloud_;
 void RandomMapGenerate() {
   pcl::PointXYZ pt_random;
 
-  rand_x = uniform_real_distribution<double>(_x_l, _x_h);
-  rand_y = uniform_real_distribution<double>(_y_l, _y_h);
-  rand_w = uniform_real_distribution<double>(_w_l, _w_h);
-  rand_h = uniform_real_distribution<double>(_h_l, _h_h);
+  // 初始化随机数生成器（均匀分布）
+  rand_x = uniform_real_distribution<double>(_x_l, _x_h); // X坐标范围
+  rand_y = uniform_real_distribution<double>(_y_l, _y_h); // Y坐标范围
+  rand_w = uniform_real_distribution<double>(_w_l, _w_h); // 障碍物宽度范围
+  rand_h = uniform_real_distribution<double>(_h_l, _h_h); // 障碍物高度范围
 
-  rand_radius_ = uniform_real_distribution<double>(radius_l_, radius_h_);
-  rand_radius2_ = uniform_real_distribution<double>(radius_l_, 1.2);
-  rand_theta_ = uniform_real_distribution<double>(-theta_, theta_);
-  rand_z_ = uniform_real_distribution<double>(z_l_, z_h_);
+  rand_radius_ = uniform_real_distribution<double>(radius_l_, radius_h_); // 半径范围1
+  rand_radius2_ = uniform_real_distribution<double>(radius_l_, 1.2);      // 半径范围2 椭圆用
+  rand_theta_ = uniform_real_distribution<double>(-theta_, theta_);       // 旋转角度范围
+  rand_z_ = uniform_real_distribution<double>(z_l_, z_h_);                // Z坐标范围
 
-  // generate polar obs
+  // generate polar obs // 生成柱状障碍物（立方体）
   for (int i = 0; i < _obs_num; i++) {
     double x, y, w, h;
+    // eng就是一个生成随机数的引擎
     x = rand_x(eng);
     y = rand_y(eng);
-    w = rand_w(eng);
-
+    w = rand_w(eng); // 随机生成宽度
+    // 障碍物位置校验（避免生成在起点附近）
     if (sqrt(pow(x - _init_x, 2) + pow(y - _init_y, 2)) < 2.0) {
       i--;
       continue;
     }
-
+    // 特定点检查，可能是目标点
     if (sqrt(pow(x - 19.0, 2) + pow(y - 0.0, 2)) < 2.0) {
       i--;
       continue;
     }
+    // 坐标对齐到栅格中心（基于分辨率）
 
     x = floor(x / _resolution) * _resolution + _resolution / 2.0;
     y = floor(y / _resolution) * _resolution + _resolution / 2.0;
@@ -165,7 +168,10 @@ void RandomMapGenerate() {
   cloudMap.is_dense = true;
 
   ROS_WARN("Finished generate random map ");
-
+  
+  // 构建KD树用于快速搜索
+  // 在 PCL（Point Cloud Library，点云库）中，cloudMap.makeShared() 是一个用于生成共享指针的方法，通常用于将一个点云对象转换为共享指针形式，
+  // 以便在需要共享指针作为输入的函数中使用。
   kdtreeLocalMap.setInputCloud(cloudMap.makeShared());
 
   _map_ok = true;
@@ -195,7 +201,7 @@ void pubSensedPoints() {
   // }
 
   return;
-
+  // 下面的代码都不会运行，因为上面已经返回return。
   /* ---------- only publish points around current position ---------- */
   if (!_map_ok || !_has_odom) return;
 
@@ -272,13 +278,13 @@ int main(int argc, char** argv) {
   ros::init(argc, argv, "random_map_sensing");
   ros::NodeHandle n("~");
 
-  _local_map_pub = n.advertise<sensor_msgs::PointCloud2>("/map_generator/local_cloud", 1);
-  _all_map_pub = n.advertise<sensor_msgs::PointCloud2>("/map_generator/global_cloud", 1);
+  _local_map_pub = n.advertise<sensor_msgs::PointCloud2>("/map_generator/local_cloud", 1); // local_cloud 话题未发布
+  _all_map_pub = n.advertise<sensor_msgs::PointCloud2>("/map_generator/global_cloud", 1); // global_cloud 话题发布成功
 
   _odom_sub = n.subscribe("odometry", 50, rcvOdometryCallbck);
 
   click_map_pub_ =
-      n.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/local_map", 1);
+      n.advertise<sensor_msgs::PointCloud2>("/pcl_render_node/local_map", 1);  // 局部地图来自其他话题，这里的局部地图没有起作用
   // ros::Subscriber click_sub = n.subscribe("/goal", 10, clickCallback);
 
   n.param("init_state_x", _init_x, 0.0);
@@ -321,6 +327,7 @@ int main(int argc, char** argv) {
   ros::Rate loop_rate(_sense_rate);
 
   while (ros::ok()) {
+    // 仅仅发布全局地图
     pubSensedPoints();
     ros::spinOnce();
     loop_rate.sleep();
